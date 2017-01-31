@@ -1,12 +1,12 @@
 ---
 - name: Build disk
-  hosts: ec2
+  hosts: localhost
   user: ubuntu
   become: True
-  gather_facts: True
+  gather_facts: False
 
   vars:
-    vyos_iso_url: "{{ iso }}"
+    vyos_iso_url: "http://packages.vyos.net/iso/release/1.1.7/vyos-1.1.7-i586.iso"
     vyos_iso_local: /tmp/vyos.iso
     vyos_key_url: http://packages.vyos.net/vyos-release.gpg
     vyos_key_local: /tmp/vyos-release.gpg
@@ -14,63 +14,67 @@
     CD_ROOT: /mnt/cdrom
     CD_SQUASH_ROOT: /mnt/cdsquash
     SQUASHFS_IMAGE: "{{ CD_ROOT }}/live/filesystem.squashfs"
+    VOLUME_DRIVE: /dev/xvdb
 
     ROOT_FSTYPE: ext4
-    ROOT_PARTITION: "{{ volume_drive }}1" # The install partition
+    ROOT_PARTITION: "{{ VOLUME_DRIVE }}1" # The install partition
 
     WRITE_ROOT: /mnt/wroot
     READ_ROOT: /mnt/squashfs
     INSTALL_ROOT: /mnt/inst_root
 
   tasks:
-    # ---- Set up the specified ISO release ----
+  
+    # create second ebs volume?
 
-    - name: Fetch VyOS ISO GPG signature
-      uri:
-        url: "{{ vyos_iso_url }}.asc"
-        dest: "{{ vyos_iso_local }}.asc"
-        status_code: 200,404,403
-      register: gpg_uri
+ # ---- Set up the specified ISO release ----
+
+  # - name: Fetch VyOS ISO GPG signature
+  #   uri:
+  #     url: "{{ vyos_iso_url }}.asc"
+  #     dest: "{{ vyos_iso_local }}.asc"
+  #     status_code: 200,404,403
+  #   register: gpg_uri
 
     - name: Download VyOS ISO release
       get_url:
         url: "{{ vyos_iso_url }}"
         dest: "{{ vyos_iso_local }}"
 
-    - name: Fetch the VyOS release GPG key
-      get_url:
-        url: "{{ vyos_key_url}}"
-        dest: "{{ vyos_key_local }}"
+ # name: Fetch the VyOS release GPG key
+ # get_url:
+ #   url: "{{ vyos_key_url}}"
+ #   dest: "{{ vyos_key_local }}"
 
-    - name: Install the VyOS release GPG key
-      command: gpg --import {{ vyos_key_local }}
-      when: gpg_uri.status == 200
+ # name: Install the VyOS release GPG key
+ # command: gpg --import {{ vyos_key_local }}
+ # when: gpg_uri.status == 200
 
-    - name: Validate ISO GPG signature
-      command: gpg --verify {{ vyos_iso_local }}.asc {{ vyos_iso_local }}
-      when: gpg_uri.status == 200
+ # name: Validate ISO GPG signature
+ # command: gpg --verify {{ vyos_iso_local }}.asc {{ vyos_iso_local }}
+ # when: gpg_uri.status == 200
 
     - name: Mount ISO
       mount:
-        name: "{{ CD_ROOT }}"
-        src: "{{ vyos_iso_local }}"
-        fstype: iso9660
-        opts: loop,ro
-        state: mounted
+       name: "{{ CD_ROOT }}"
+       src: "{{ vyos_iso_local }}"
+       fstype: iso9660
+       opts: loop,ro
+       state: mounted
 
-    - name: Verify checksums of all the files in the ISO image
-      command: md5sum -c md5sum.txt
-      args:
-        chdir: "{{ CD_ROOT }}"
-      changed_when: False
+ # name: Verify checksums of all the files in the ISO image
+ # command: md5sum -c md5sum.txt
+ # args:
+ #   chdir: "{{ CD_ROOT }}"
+ # changed_when: False
 
     - name: Mount squashfs image from ISO
       mount:
-        name: "{{ CD_SQUASH_ROOT }}"
-        src: "{{ SQUASHFS_IMAGE }}"
-        fstype: squashfs
-        opts: loop,ro
-        state: mounted
+       name: "{{ CD_SQUASH_ROOT }}"
+       src: "{{ SQUASHFS_IMAGE }}"
+       fstype: squashfs
+       opts: loop,ro
+       state: mounted
 
     - name: Read version string from iso packages
       shell: cat {{ CD_ROOT }}/live/filesystem.packages | grep ^vyatta-version | awk '{print $2}'
@@ -79,21 +83,20 @@
     - name: Debug version string as read from ISO
       debug: msg="This is version {{ version_string.stdout }}"
 
-    # ---- Prepare EBS disk ----
-    # All the parted stuff may be replaced when this PR is merged
-    # https://github.com/ansible/ansible-modules-extras/pull/2518
+ # ---- Prepare EBS disk ----
+
     - name: Check if EBS disk has already been modified by this playbook
-      shell: parted --script {{ volume_drive }} print || true
+      shell: parted --script {{ VOLUME_DRIVE }} print || true
       register: parted_print
       changed_when: False
 
     - name: Create a disk label
-      command: parted --script {{ volume_drive }} mklabel msdos
+      command: parted --script {{ VOLUME_DRIVE }} mklabel msdos
       when: "parted_print is defined and
-            parted_print.stdout.startswith('Error: {{ volume_drive }}: unrecognised disk label')"
+            parted_print.stdout.startswith('Error: {{ VOLUME_DRIVE }}: unrecognised disk label')"
 
     - name: Make a root partition using the full disk and optimal alignment
-      command: parted --script --align optimal {{ volume_drive }} mkpart primary 0% 100%
+      command: parted --script --align optimal {{ VOLUME_DRIVE }} mkpart primary 0% 100%
       when: parted_print is defined and
             parted_print.stdout.find('primary') == -1
 
@@ -102,8 +105,8 @@
         fstype: "{{ ROOT_FSTYPE }}"
         device: "{{ ROOT_PARTITION }}"
 
-    - name: Make {{ volume_drive }} bootable
-      command: parted --script {{ volume_drive }} set 1 boot
+    - name: Make {{ VOLUME_DRIVE }} bootable
+      command: parted --script {{ VOLUME_DRIVE }} set 1 boot
       when: parted_print is defined and
             parted_print.stdout.find('boot') == -1
 
@@ -114,12 +117,18 @@
         fstype: "{{ ROOT_FSTYPE }}"
         state: mounted
 
-    # ---- Install image from ISO ----
+ # ---- Install image from ISO ----
     - name: Create {{ WRITE_ROOT }} directories
       file:
         path: "{{ WRITE_ROOT }}/boot/{{ version_string.stdout }}/live-rw"
         state: directory
       register: RW_DIR
+
+    - name: Create merged directory for overlayfs | http://askubuntu.com/questions/109413/how-do-i-use-overlayfs/487085#487085
+      file:
+        path: "{{ WRITE_ROOT }}/boot/work"
+        state: directory
+      register: WORK_DIR
 
     - name: Copy squashfs image from ISO to root partition
       command: cp -p {{ SQUASHFS_IMAGE }} {{ WRITE_ROOT }}/boot/{{ version_string.stdout }}/{{ version_string.stdout }}.squashfs
@@ -144,12 +153,12 @@
         name: "{{ INSTALL_ROOT }}"
         src: overlayfs
         fstype: overlayfs
-        opts: "noatime,upperdir={{ RW_DIR.path }},lowerdir={{ READ_ROOT }}"
+        opts: "noatime,upperdir={{ RW_DIR.path }},lowerdir={{ READ_ROOT }},workdir={{ WORK_DIR.path }}"
         state: mounted
 
-    # ---- Post image installation tasks ----
+ # ---- Post image installation tasks ----
 
-    ## ---- VyOS configuration ----
+    # ---- VyOS configuration ----
     - name: Make sure that config partition marker exists
       command: touch {{ INSTALL_ROOT }}/opt/vyatta/etc/config/.vyatta_config
       args:
@@ -165,6 +174,7 @@
         path: "{{ INSTALL_ROOT }}/opt/vyatta/etc/config/config.boot"
         mode: 0775
 
+ # ---- Modify config to meet AWS EC2 AMI requirements ----
     ### ---- Modify config to meet AWS EC2 AMI requirements ----
     ### FIXME: This section is not idempotent yet!
     - name: Add interface eth0 and set address to dhcp
@@ -173,7 +183,6 @@
                \       address dhcp\n
                \   }
                ' {{ INSTALL_ROOT }}/opt/vyatta/etc/config/config.boot
-
     - name: Add service ssh and disable-password-authentication
       command: sed -i '/system {/ i
                service {\n
@@ -182,7 +191,6 @@
                \       port 22\n
                \   }\n}
                ' {{ INSTALL_ROOT }}/opt/vyatta/etc/config/config.boot
-
     # Should not change to hvc0 because it doesn't work
     # - name: Change system device console to hvc0
     #   command: sed -i '/device ttyS0 {/ c\
@@ -193,43 +201,36 @@
       command: sed -i '/login {/ i\
                \   host-name VyOS-AMI
                ' {{ INSTALL_ROOT }}/opt/vyatta/etc/config/config.boot
-
     - name: Change system login user vyos encrypted-password to '*'
       command: sed -i '/encrypted-password/ c\
                \               encrypted-password "*"
                ' {{ INSTALL_ROOT }}/opt/vyatta/etc/config/config.boot
-
     ## ---- Install GRUB boot loader ----
     - name: Create GRUB directory
       file:
         path: "{{ WRITE_ROOT }}/boot/grub"
         state: directory
-
     # TODO: Check on EC2 what fdisk -l states as /dev/sda or /dev/xvda and maybe
     # Change this from template to command echo
     # - name: Configure GRUB device map
     #   template: src=templates/boot/grub/device.map.j2 dest={{ WRITE_ROOT }}/boot/grub/device.map mode=0644
     # on ec2 result without template (hd0)  /dev/xvdf change to /dev/xvda
-
     # It is necessary to mount and bind /dev, /proc, /sys and /boot in order to execute grub-install
-    # and install GRUB correctly within the {{ volume_drive }} using chroot
+    # and install GRUB correctly within the {{ VOLUME_DRIVE }} using chroot
     - name: Mount and bind /dev /proc /sys and {{ WRITE_ROOT }}/boot to {{ INSTALL_ROOT }}
       shell: mount --bind /dev {{ INSTALL_ROOT }}/dev &&
              mount --bind /proc {{ INSTALL_ROOT }}/proc &&
              mount --bind /sys {{ INSTALL_ROOT }}/sys &&
              mount --bind {{ WRITE_ROOT }} {{ INSTALL_ROOT }}/boot
-
-    - name: Install GRUB in the boot sector of {{ volume_drive }}
-      command: chroot {{ INSTALL_ROOT }} grub-install --no-floppy --root-directory=/boot {{ volume_drive }}
+    - name: Install GRUB in the boot sector of {{ VOLUME_DRIVE }}
+      command: chroot {{ INSTALL_ROOT }} grub-install --no-floppy --root-directory=/boot {{ VOLUME_DRIVE }}
       args:
         creates: "{{ INSTALL_ROOT }}/boot/grub/grubenv"
-
     - name: Configure GRUB for AWS EC2
       template:
         src: templates/boot/grub/grub.cfg.j2
         dest: "{{ WRITE_ROOT }}/boot/grub/grub.cfg"
         mode: 0644
-
     # Install ec2 init script. This isn't actually used, but left here for easy development of this script.
     - name: Copy ec2-fetch-ssh-public-key init script to {{ INSTALL_ROOT }}
       copy:
