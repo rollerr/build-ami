@@ -90,10 +90,11 @@
       register: parted_print
       changed_when: False
 
+      # isn't working on the conditional
     - name: Create a disk label
       command: parted --script {{ VOLUME_DRIVE }} mklabel msdos
-      when: "parted_print is defined and
-            parted_print.stdout.startswith('Error: {{ VOLUME_DRIVE }}: unrecognised disk label')"
+      #when: "parted_print is defined and
+      #      parted_print.stdout.startswith('Error: {{ VOLUME_DRIVE }}: unrecognised disk label')"
 
     - name: Make a root partition using the full disk and optimal alignment
       command: parted --script --align optimal {{ VOLUME_DRIVE }} mkpart primary 0% 100%
